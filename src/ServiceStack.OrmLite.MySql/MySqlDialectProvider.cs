@@ -12,7 +12,7 @@ namespace ServiceStack.OrmLite.MySql
     {
         public static MySqlDialectProvider Instance = new MySqlDialectProvider();
 
-        private const string TextColumnDefinition = "TEXT";
+        private const string TextColumnDefinition = "MEDIUMTEXT";
 
         public MySqlDialectProvider()
         {
@@ -20,7 +20,7 @@ namespace ServiceStack.OrmLite.MySql
             base.IntColumnDefinition = "int(11)";
             base.BoolColumnDefinition = "tinyint(1)";
             base.DecimalColumnDefinition = "decimal(38,6)";
-            base.GuidColumnDefinition = "char(36)";
+            base.GuidColumnDefinition = "binary(16)";
             base.DefaultStringLength = 255;
             base.MaxStringColumnDefinition = "TEXT";
             base.InitColumnTypeMap();
@@ -30,8 +30,8 @@ namespace ServiceStack.OrmLite.MySql
 
         public override void OnAfterInitColumnTypeMap()
         {
-            DbTypeMap.Set<Guid>(DbType.String, GuidColumnDefinition);
-            DbTypeMap.Set<Guid?>(DbType.String, GuidColumnDefinition);
+            DbTypeMap.Set<Guid>(DbType.Binary, GuidColumnDefinition);
+            DbTypeMap.Set<Guid?>(DbType.Binary, GuidColumnDefinition);
             DbTypeMap.Set<DateTimeOffset>(DbType.DateTimeOffset, StringColumnDefinition);
             DbTypeMap.Set<DateTimeOffset?>(DbType.DateTimeOffset, StringColumnDefinition);
         }
@@ -76,6 +76,42 @@ namespace ServiceStack.OrmLite.MySql
             return new MySqlConnection(connectionString);
         }
 
+        protected override object GetValue<T>(FieldDefinition fieldDef, object obj) {
+            var value = obj is T
+               ? fieldDef.GetValue(obj)
+               : GetAnonValue<T>(fieldDef, obj);
+
+            if (value != null) {
+                if (fieldDef.IsRefType) {
+                    
+                    //Let ADO.NET providers handle byte[]
+                    if (fieldDef.FieldType == typeof(byte[])) {
+                        return value;
+                    }
+                    return OrmLiteConfig.DialectProvider.StringSerializer.SerializeToString(value);
+                }
+                if (fieldDef.FieldType.IsEnum) {
+                    var enumValue = OrmLiteConfig.DialectProvider.StringSerializer.SerializeToString(value);
+                    return !string.IsNullOrEmpty(enumValue)
+                        ? enumValue.Trim('"')
+                        : fieldDef.IsNullable
+                            ? null
+                            : fieldDef.FieldType.GetDefaultValue();
+                }
+                if (fieldDef.FieldType == typeof(TimeSpan)) {
+                    var timespan = (TimeSpan)value;
+                    return timespan.Ticks;
+                }
+                if (fieldDef.FieldType == typeof(Guid)) {
+                    var guid = (Guid)value;
+                    return guid.ToByteArray();
+                }
+                
+            }
+
+            return value;
+        }
+
         public override string GetQuotedValue(object value, Type fieldType)
         {
             if (value == null) return "NULL";
@@ -91,6 +127,10 @@ namespace ServiceStack.OrmLite.MySql
                 const string dateTimeFormat = "yyyy-MM-dd HH:mm:ss";
 
                 return base.GetQuotedValue(dateValue.ToString(dateTimeFormat), typeof(string));
+            }
+
+            if (fieldType == typeof(Guid)) {
+                return "0x" + BitConverter.ToString(((Guid)value).ToByteArray()).Replace("-", "");
             }
 
             if (fieldType == typeof(byte[]))
@@ -115,6 +155,9 @@ namespace ServiceStack.OrmLite.MySql
 
             if (type == typeof(byte[]))
                 return value;
+
+            if (type == typeof(Guid))
+                return new Guid((byte[])value);
 
             return base.ConvertDbValue(value, type);
         }
